@@ -6,8 +6,11 @@ from sensor_msgs.msg import LaserScan
 from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry
 
+def quat_to_tuple(q):
+    return (q.x, q.y, q.z, q.w)
+
 def cb(data):
-    rospy.loginfo(data.pose.pose.position)
+    rospy.loginfo(euler_from_quaternion(quat_to_tuple(data.pose.pose.orientation)))
 
 
 def Listener():
