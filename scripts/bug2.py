@@ -8,8 +8,13 @@ from geometry_msgs.msg import Twist, Point
 from nav_msgs.msg import Odometry
 from tf.transformations import euler_from_quaternion
 
-no_odom_reading = True #flag to tell if gazebo is up
+avoiding_obstacle = False
+no_lidar_readings = True
+new_lidar_reading = False
+following_wall = False
+no_odom_readings = True #flag to tell if gazebo is up
 ON_LINE_THRESH = 0.5 #threshold value to tell if robot is on the goal line
+OBSTACLE_THRESH = 1.7
 
 cur_pos = Point() #current position
 cur_angle = 0 #current z axis euler angle
@@ -18,7 +23,11 @@ DEST = Point() #goal point
 DEST.x = 5
 DEST.y = 7
 
+min_dist_to_goal = 10000000000.
+
 EPS = 0.2 #epsilon value
+
+lidar_readings = [0] * 640
 
 start_pos = Point() #first recived position value
 
@@ -41,12 +50,19 @@ def quat_to_tuple(q): #function to make a tuple out of a geometry_msgs/Quaternio
     return (q.x, q.y, q.z, q.w)
 
 def update_position(data): #callback function for the odometry topic
-    global cur_pos, no_odom_reading, cur_angle, start_pos
+    global cur_pos, no_odom_readings, cur_angle, start_pos
     cur_angle = euler_from_quaternion(quat_to_tuple(data.pose.pose.orientation))[2] #translate quaternion to euler angel and take only the z axis value
     cur_pos = data.pose.pose.position
-    if no_odom_reading:
+    if no_odom_readings:
         start_pos = deepcopy(cur_pos)
-    no_odom_reading = False
+    no_odom_readings = False
+
+def update_lidar(data):
+    global lidar_readings, no_lidar_readings, new_lidar_reading
+    no_lidar_readings = False
+    new_lidar_reading = True
+    rospy.loginfo('got lidar')
+    lidar_readings = data.ranges
 
 def is_on_goal_line(): #function to check if turtle bot is on goal line
     #if (cur_pos, start_pos) and (cur_pos, DEST) are collinear robot is considered to be on the goal line
@@ -80,23 +96,100 @@ def go_to_goal():
         write_speed(0, -sign(turn_angle) * 0.3)
     else:
         rospy.loginfo('going_to_dest')
-        write_speed(0.15, turn_angle * TURN_K) #angular speed is proportional to the turn angle
+        write_speed(0.25, turn_angle * TURN_K) #angular speed is proportional to the turn angle
+
+def obstacle_infront():
+    return  not math.isnan(lidar_readings[319]) and lidar_readings[319] < OBSTACLE_THRESH
+
+TARGET_DIST = 1.7
+PID_SPEED = 0.3
+MAX_DIST = 10.0
+MIN_DIST = 0.45
+dT = 0.033
+RANGES_SIZE = 640
+
+K_p = 0.4
+K_i = 0.1
+K_d = 0.06
+
+err_int = 0
+prev_err = 0
+prev_dist = 1
+
+def PID(cur_val, dest_val):
+    rospy.loginfo('current distance to wall: ' + str(cur_val))
+    global err_int
+    global prev_err
+
+    err = dest_val - cur_val
+
+    err_diff = (err - prev_err) / dT
+    prev_err = err
+
+    err_int += err * dT
+
+    return K_p * err + K_i * err_int + K_d * err_diff
+
+def lost_wall():
+    return math.isnan(lidar_readings[0])
+
+def wall_infront():
+    return not math.isnan(lidar_readings[319]) and lidar_readings[319] < 1.2
+
+def turn_90_deg():
+    write_speed(0)
+
+def follow_wall():
+    global new_lidar_reading, following_wall
+    if not following_wall:
+        rospy.loginfo('turning')
+        while(math.isnan(lidar_readings[0]) or lidar_readings[0] + 0.2 > OBSTACLE_THRESH):
+            write_speed(0, 0.2)
+        rospy.loginfo('stopped turning')
+        write_speed(0)
+        following_wall = True
+    if new_lidar_reading:
+        operation_type = ''
+        if wall_infront():
+            operation_type = 'dead end'
+            write_speed(0, 0.2)
+        elif lost_wall():
+            operation_type = 'lost wall'
+            turn_90_deg()
+        else:
+            operation_type = 'PID'
+            write_speed(PID_SPEED, PID(lidar_readings[0], TARGET_DIST))
+        rospy.loginfo(operation_type)
+        new_lidar_reading = False
 
 def routine():
+    global min_dist_to_goal, avoiding_obstacle, following_wall
     dist_to_goal = vec_len(cur_pos, DEST) #calculate distance to goal point
-    rospy.loginfo('dist to goal ' + str(dist_to_goal))
     if (dist_to_goal < 0.2): #check if robot is at goal
         rospy.loginfo('got_to_goal')
         exit()
-    if is_on_goal_line():
+    if (is_on_goal_line() and not obstacle_infront()
+            and (not avoiding_obstacle or dist_to_goal < min_dist_to_goal - 0.1)):
+        avoiding_obstacle = False
+        following_wall = False
+        min_dist_to_goal = dist_to_goal
         go_to_goal()
+    else:
+        avoiding_obstacle = True
+        follow_wall()
 
 
 def Listener():
     rospy.init_node('BUG2', anonymous=False) #initialize a ROS node called BUG2
+    global K_p, K_i, K_d
+    K_p = rospy.get_param('/gains/Kp', K_p)
+    K_i = rospy.get_param('/gains/Ki', K_i)
+    K_d = rospy.get_param('/gains/Kd', K_d)
+    rospy.loginfo('Kp: ' + str(K_p) + ' Ki: ' + str(K_i) + ' Kd: ' + str(K_d))
     rospy.Subscriber('/odom', Odometry, update_position, queue_size=1) #subscribe to odometry topic
+    rospy.Subscriber('/scan', LaserScan, update_lidar, queue_size=1)
     while not rospy.is_shutdown():
-        if not no_odom_reading:
+        if not no_odom_readings and not no_lidar_readings:
             routine()
 
 
