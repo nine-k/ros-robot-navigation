@@ -13,7 +13,7 @@ no_lidar_readings = True
 new_lidar_reading = False
 following_wall = False
 no_odom_readings = True #flag to tell if gazebo is up
-ON_LINE_THRESH = 0.5 #threshold value to tell if robot is on the goal line
+ON_LINE_THRESH = 0.2 #threshold value to tell if robot is on the goal line
 OBSTACLE_THRESH = 1.7
 
 cur_pos = Point() #current position
@@ -61,14 +61,16 @@ def update_lidar(data):
     global lidar_readings, no_lidar_readings, new_lidar_reading
     no_lidar_readings = False
     new_lidar_reading = True
-    rospy.loginfo('got lidar')
+    #rospy.loginfo('got lidar ' + str(data.ranges[0]))
     lidar_readings = data.ranges
 
 def is_on_goal_line(): #function to check if turtle bot is on goal line
-    #if (cur_pos, start_pos) and (cur_pos, DEST) are collinear robot is considered to be on the goal line
-    coeff_x = (cur_pos.x - start_pos.x) / (DEST.x - start_pos.x)
-    coeff_y = (cur_pos.y - start_pos.y) / (DEST.y - start_pos.y)
-    return abs(coeff_x - coeff_y) < ON_LINE_THRESH
+    dist_to_line = abs((DEST.y - start_pos.y) * cur_pos.x - (DEST.x - start_pos.x) * cur_pos.y +
+                       DEST.x * start_pos.y - DEST.y * start_pos.x)
+    dist_to_line /= vec_len(DEST, start_pos)
+    res = dist_to_line < ON_LINE_THRESH
+    #rospy.loginfo('dist to goal line ' + str(dist_to_line))
+    return res
 
 def vec_len(p1, p2): #calculate length of a vector
     return math.sqrt((p1.x - p2.x)**2 + (p1.y - p2.y)**2)
@@ -117,7 +119,7 @@ prev_err = 0
 prev_dist = 1
 
 def PID(cur_val, dest_val):
-    rospy.loginfo('current distance to wall: ' + str(cur_val))
+    #rospy.loginfo('current distance to wall: ' + str(cur_val))
     global err_int
     global prev_err
 
@@ -137,13 +139,14 @@ def wall_infront():
     return not math.isnan(lidar_readings[319]) and lidar_readings[319] < 1.2
 
 def turn_90_deg():
-    write_speed(0)
+    while math.isnan(lidar_readings[0]):
+        write_speed(0.2, -0.2)
 
 def follow_wall():
     global new_lidar_reading, following_wall
     if not following_wall:
         rospy.loginfo('turning')
-        while(math.isnan(lidar_readings[0]) or lidar_readings[0] + 0.2 > OBSTACLE_THRESH):
+        while math.isnan(lidar_readings[0]):
             write_speed(0, 0.2)
         rospy.loginfo('stopped turning')
         write_speed(0)
@@ -165,6 +168,7 @@ def follow_wall():
 def routine():
     global min_dist_to_goal, avoiding_obstacle, following_wall
     dist_to_goal = vec_len(cur_pos, DEST) #calculate distance to goal point
+    #rospy.loginfo('dist to goal: ' + str(dist_to_goal))
     if (dist_to_goal < 0.2): #check if robot is at goal
         rospy.loginfo('got_to_goal')
         exit()
