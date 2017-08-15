@@ -64,45 +64,6 @@ def update_lidar(data):
     #rospy.loginfo('got lidar ' + str(data.ranges[0]))
     lidar_readings = data.ranges
 
-def is_on_goal_line(): #function to check if turtle bot is on goal line
-    dist_to_line = abs((DEST.y - start_pos.y) * cur_pos.x - (DEST.x - start_pos.x) * cur_pos.y +
-                       DEST.x * start_pos.y - DEST.y * start_pos.x)
-    dist_to_line /= vec_len(DEST, start_pos)
-    res = dist_to_line < ON_LINE_THRESH
-    #rospy.loginfo('dist to goal line ' + str(dist_to_line))
-    return res
-
-def vec_len(p1, p2): #calculate length of a vector
-    return math.sqrt((p1.x - p2.x)**2 + (p1.y - p2.y)**2)
-
-def calc_angle_to_goal():
-    dist = vec_len(DEST, cur_pos)
-    phi = math.acos((DEST.x - cur_pos.x) / dist) #calculate angle between (DEST, cur_pos) and the x axis
-    if (DEST.y - cur_pos.y) < 0: #convert angle between vectors to euler angle
-        phi *= -1
-    return phi
-
-TURN_K = -0.2 #angular speed proportional coefficient when heading towards the goal
-
-def go_to_goal():
-    angle_to_goal = calc_angle_to_goal()
-    #rospy.loginfo('angle to goal ' + str(angle_to_goal * 180 / math.pi))
-    #rospy.loginfo('cur_angle ' + str(cur_angle * 180 / math.pi))
-    turn_angle = cur_angle - angle_to_goal #difference between the current oriention of the robot and the desired orientation
-    if turn_angle < -math.pi: #calcualte minimum turn angle
-        turn_angle += 2 * math.pi
-    if turn_angle > math.pi:
-        turn_angle -= 2 * math.pi
-    if abs(turn_angle) > math.pi / 6: #if the turn angle is to big first rotate in one point to avoid wide turn arc
-        rospy.loginfo('turning_to_dest')
-        write_speed(0, -sign(turn_angle) * 0.3)
-    else:
-        rospy.loginfo('going_to_dest')
-        write_speed(0.25, turn_angle * TURN_K) #angular speed is proportional to the turn angle
-
-def obstacle_infront():
-    return  not math.isnan(lidar_readings[319]) and lidar_readings[319] < OBSTACLE_THRESH
-
 TARGET_DIST = 1.7
 PID_SPEED = 0.3
 MAX_DIST = 10.0
@@ -132,11 +93,23 @@ def PID(cur_val, dest_val):
 
     return K_p * err + K_i * err_int + K_d * err_diff
 
+def fuzzy_follow(dist, t_dist):
+    if (dist > t_dist + 0.2):
+        write_speed(0.1, -0.1)
+    elif (dist > t_dist - 0.2):
+        write_speed(0.2)
+    else:
+        write_speed(0.1, 0.1)
+
 def lost_wall():
     return math.isnan(lidar_readings[0])
 
 def wall_infront():
     return not math.isnan(lidar_readings[319]) and lidar_readings[319] < 1.2
+
+def turn_90_deg():
+    while math.isnan(lidar_readings[0]):
+        write_speed(0.2, -0.1)
 
 def find_wall():
     write_speed(0.5)
@@ -146,16 +119,6 @@ def find_wall():
 
 def follow_wall():
     global new_lidar_reading, following_wall
-    if not following_wall:
-        rospy.loginfo('turning')
-        tmp = lidar_readings[319]
-        while math.isnan(lidar_readings[0]):
-            write_speed(0, 0.2)
-        while (lidar_readings[0] - 0.1 > tmp):
-            write_speed(0, 0.2)
-        rospy.loginfo('stopped turning')
-        write_speed(0)
-        following_wall = True
     if new_lidar_reading:
         operation_type = ''
         if wall_infront():
@@ -167,25 +130,12 @@ def follow_wall():
         else:
             operation_type = 'PID'
             write_speed(PID_SPEED, PID(lidar_readings[0], TARGET_DIST))
+            #fuzzy_follow(lidar_readings[0], TARGET_DIST)
         rospy.loginfo(operation_type)
         new_lidar_reading = False
 
-def routine():
-    global min_dist_to_goal, avoiding_obstacle, following_wall
-    dist_to_goal = vec_len(cur_pos, DEST) #calculate distance to goal point
-    #rospy.loginfo('dist to goal: ' + str(dist_to_goal))
-    if (dist_to_goal < 0.2): #check if robot is at goal
-        rospy.loginfo('got_to_goal')
-        exit()
-    if (is_on_goal_line() and not obstacle_infront()
-            and (not avoiding_obstacle or dist_to_goal < min_dist_to_goal - 0.1)):
-        avoiding_obstacle = False
-        following_wall = False
-        min_dist_to_goal = dist_to_goal
-        go_to_goal()
-    else:
-        avoiding_obstacle = True
-        follow_wall()
+def routine():  
+    follow_wall()
 
 
 def Listener():
